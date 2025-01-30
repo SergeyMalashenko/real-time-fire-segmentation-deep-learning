@@ -2,131 +2,9 @@
 from typing import Tuple
 import torch
 from torch import nn
+
+import torchvision.models  as models
 import torch.nn.functional as F
-
-class MobileBottleNeck(nn.Module):
-    """
-    A class for the MobileNetV3 bottleneck block.
-
-    Attributes
-    ----------
-    use_skip_conn: bool
-        Whether to use the skip connection between the input and the
-        point-wise convolution results or not.
-    standard_conv: Sequential
-        Standard convolution sequential module.
-    depthwise_conv: Sequential
-        Depth-wise convolution sequential module.
-    squeeze_excitation: Sequential
-        Squeeze and excitation sequential module if demanded. None otherwise.
-    pointwise_conv: Sequential
-        Point-wise convolution sequential module.
-    
-    Methods
-    -------
-    forward(x: FloatTensor) -> FloatTensor
-        Forward pass of the MobileNetV3 bottleneck block.
-    """
-    def __init__(
-        self, in_channels: int, expansion_channels: int, out_channels: int,
-        depthwise_kernel_size: int, activation_layer: nn.Module,
-        use_squeeze_excitation: bool, stride: int = 1,
-        padding: int = 1) -> None:
-        """Initialize the MobileNetV3 bottleneck block.
-
-        Parameters
-        ----------
-        in_channels: int
-            Number of input channels.
-        expansion_channels: int
-            Number of channels of the hidden layers.
-        out_channels: int
-            Number of output channels.
-        depthwise_kernel_size: int
-            Size of the depth-wise convolutional kernel.
-        activation_layer: Module
-            Activation function to use after convolutional layers.
-        use_squeeze_excitation: bool
-            Whether to use the squeeze and excitation block or not.
-        stride: int
-            Stride size for convolutional layers, by default 1.
-        padding: int
-            Padding size for convolutional layers, by default 1.
-
-        """
-        super().__init__()
-
-        # Set whether to use skip connection or not.
-        self.use_skip_conn = stride == 1 and in_channels == out_channels
-        # Set whether to use the squeeze and excitation module or not.
-        self.use_squeeze_excitation = use_squeeze_excitation
-
-        # Set standard convolution sequential module.
-        self.standard_conv = nn.Sequential(
-            nn.Conv2d(in_channels, expansion_channels, kernel_size=1,
-                      bias=False),
-            nn.BatchNorm2d(expansion_channels, track_running_stats=False),
-            activation_layer(),
-        )
-
-        # Set depth-wise convolution sequential module.
-        self.depthwise_conv = nn.Sequential(
-            nn.Conv2d(expansion_channels, expansion_channels,
-                      kernel_size=depthwise_kernel_size, stride=stride,
-                      groups=expansion_channels, padding=padding, bias=False),
-            nn.BatchNorm2d(expansion_channels, track_running_stats=False),
-        )
-
-        # Set squeeze and excitation sequential module.
-        self.squeeze_excitation = nn.Sequential(
-            nn.AdaptiveAvgPool2d(output_size=1),
-            nn.Conv2d(expansion_channels, in_channels, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(in_channels, expansion_channels, kernel_size=1),
-            nn.Hardswish(),
-        ) if use_squeeze_excitation else None
-
-        # Set point-wise convolution sequential module.
-        self.pointwise_conv = nn.Sequential( 
-            nn.Conv2d(expansion_channels, out_channels, kernel_size=1,
-                      bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False)
-        )
-
-    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        """Forward pass of the MobileNetV3 bottleneck block.
-
-        Parameters
-        ----------
-        x : FloatTensor
-            Input tensor.
-
-        Returns
-        -------
-        FloatTensor
-            Output tensor.
-        """
-        # Apply standard convolution.
-        out = self.standard_conv(x)
-
-        # Apply depth-wise convolution.
-        depth_wise_out = self.depthwise_conv(out)
-
-        # Apply squeeze and excitation block if demanded.
-        if self.use_squeeze_excitation:
-            out = self.squeeze_excitation(depth_wise_out)
-            out = out * depth_wise_out
-        else:
-            out = depth_wise_out
-
-        # Apply point-wise convolution
-        out = self.pointwise_conv(out)
-
-        # Apply an additive skip connection with the input if demanded.
-        if self.use_skip_conn:
-            out = out + x
-
-        return out
 
 class DCNN(nn.Module):
     """A Deep Convolutional Neural Network (DCNN) module based on MobileNetV3
@@ -168,50 +46,22 @@ class DCNN(nn.Module):
         """Initialize the DCNN module."""
         super().__init__()
 
+        backbone_model   = models.mobilenet_v3_large(pretrained=True)
+        base_layers      = nn.ModuleList(list(backbone_model.features))
+        
         # Input sequential block.
-        self.input_convolution = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(16, track_running_stats=False),
-            nn.Hardswish(),
-        )
-
+        self.input_convolution = nn.Sequential( base_layers[0], )
         # First MobileNetV3 bottlenecks sequential block.
-        self.bottlenecks_sequential_1 =  nn.Sequential(
-            MobileBottleNeck(16, 16, 16, 3, nn.ReLU, False, stride=1),
-        )
+        self.bottlenecks_sequential_1 =  nn.Sequential(base_layers[1],)
 
         # Second MobileNetV3 bottlenecks sequential block.
-        self.bottlenecks_sequential_2 =  nn.Sequential(
-            MobileBottleNeck(16, 64, 24, 3, nn.ReLU, False, stride=2,
-                             padding=1),
-            MobileBottleNeck(24, 72, 24, 3, nn.ReLU, False, stride=1),
-        )
+        self.bottlenecks_sequential_2 =  nn.Sequential(*base_layers[2:4])
 
         # Third MobileNetV3 bottlenecks sequential block.
-        self.bottlenecks_sequential_3 =  nn.Sequential(
-            MobileBottleNeck(24, 72, 40, 5, nn.ReLU, True, stride=2,
-                             padding=2),
-            MobileBottleNeck(40, 120, 40, 5, nn.ReLU, True, stride=1,
-                             padding=2),
-            MobileBottleNeck(40, 120, 40, 5, nn.ReLU, True, stride=1,
-                             padding=2),
-        )
-
+        self.bottlenecks_sequential_3 =  nn.Sequential(*base_layers[4:7])
+        
         # Last MobileNetV3 bottlenecks sequential block.
-        self.bottlenecks_sequential_4 =  nn.Sequential(
-            MobileBottleNeck(40, 240, 80, 3, nn.Hardswish, False, stride=2),
-            MobileBottleNeck(80, 200, 80, 3, nn.Hardswish, False, stride=1),
-            MobileBottleNeck(80, 184, 80, 3, nn.Hardswish, False, stride=1),
-            MobileBottleNeck(80, 184, 80, 3, nn.Hardswish, False, stride=1),
-            MobileBottleNeck(80, 480, 112, 3, nn.Hardswish, True, stride=1),
-            MobileBottleNeck(112, 672, 160, 3, nn.Hardswish, True, stride=1),
-            MobileBottleNeck(160, 672, 160, 5, nn.Hardswish, True, stride=1,
-                             padding=2),
-            MobileBottleNeck(160, 960, 160, 5, nn.Hardswish, True, stride=1,
-                             padding=2),
-            MobileBottleNeck(160, 960, 160, 5, nn.Hardswish, True, stride=1,
-                             padding=2),
-        )
+        self.bottlenecks_sequential_4 =  nn.Sequential(*base_layers[7:] )
 
     def forward(self, x: torch.FloatTensor) -> Tuple[
         torch.FloatTensor, torch.FloatTensor,
@@ -242,7 +92,7 @@ class DCNN(nn.Module):
         f2 = self.bottlenecks_sequential_2(f1)
         f3 = self.bottlenecks_sequential_3(f2)
         out = self.bottlenecks_sequential_4(f3)
-
+        
         return f1, f2, f3, out
 
 class ASPP(nn.Module):
@@ -285,13 +135,13 @@ class ASPP(nn.Module):
         """Initialize the ASPP module."""
         super().__init__()
         # Set the number of input and output channels.
-        in_channels = 160
+        in_channels  = 960
         out_channels = 256
 
         # Set the standard convolution sequential block.
         self.standard_convolution = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
 
@@ -299,19 +149,19 @@ class ASPP(nn.Module):
         self.atrous_convolution_1 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
                       bias=False, dilation=6, padding=6),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
         self.atrous_convolution_2 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
                       bias=False, dilation=12, padding=12),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
         self.atrous_convolution_3 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
                       bias=False, dilation=18, padding=18),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
 
@@ -320,7 +170,7 @@ class ASPP(nn.Module):
             nn.AdaptiveAvgPool2d(output_size=1),
             nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1,
                       bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
 
@@ -328,7 +178,7 @@ class ASPP(nn.Module):
         self.final_convolution = nn.Sequential(
             nn.Conv2d(out_channels*5, out_channels, kernel_size=1, stride=1,
                       bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
             nn.Dropout(0.1),
         )
@@ -478,17 +328,17 @@ class Decoder(nn.Module):
         # output channels to each shallow feature.
         self.convolution_f1 = nn.Sequential(
             nn.Conv2d(16, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
         self.convolution_f2 = nn.Sequential(
             nn.Conv2d(24, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
         self.convolution_f3 = nn.Sequential(
             nn.Conv2d(40, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels, track_running_stats=False),
+            nn.BatchNorm2d(out_channels, track_running_stats=True),
             nn.ReLU(),
         )
 
@@ -504,7 +354,7 @@ class Decoder(nn.Module):
         # Set the final convolution sequential block.
         self.final_convolution = nn.Sequential(
             nn.Conv2d(out_channels * 4, 256, kernel_size=3, bias=False),
-            nn.BatchNorm2d(256, track_running_stats=False),
+            nn.BatchNorm2d(256, track_running_stats=True),
             nn.ReLU(),
             nn.Conv2d(256, 2, kernel_size=1, stride=1),
         )

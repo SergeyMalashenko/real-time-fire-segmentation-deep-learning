@@ -39,8 +39,7 @@ class FocalLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
 
-    def forward(self, inputs: torch.FloatTensor, targets: torch.FloatTensor
-                ) -> torch.FloatTensor:
+    def forward(self, inputs: torch.FloatTensor, targets: torch.FloatTensor) -> torch.FloatTensor:
         """Compute the forward pass of the Focal Loss.
 
         Parameters
@@ -56,11 +55,14 @@ class FocalLoss(nn.Module):
             Scalar value of the Focal Loss.
         """
         # Get the cross entropy without reduction.
-        cross_entropy_loss = F.binary_cross_entropy_with_logits(
-            inputs, targets, reduction='none')
-
+        cross_entropy_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        
         # Compute the pt value and the focal loss.
-        pt = torch.exp(-cross_entropy_loss)
+        #pt = torch.exp(-cross_entropy_loss)
+
+        probs = F.softmax(inputs, dim=1)
+        pt = (probs * targets).sum(dim=1)
+        
         focal_loss = self.alpha * (1 - pt) ** self.gamma * cross_entropy_loss
         return focal_loss.mean()
 
